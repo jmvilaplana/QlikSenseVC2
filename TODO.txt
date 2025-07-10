@@ -1,0 +1,10 @@
+- Los valores dentro de las columnas no se pueden modificar
+- Si no se ha publicado, que no aparezca nada en la fecha
+- Normalizar fechas
+- Traducir interfaz
+- Guardar tamaño de ventana
+
+- Reorganizar layout
+- Quitar botón "Probar Conexión"
+- Añadir un footer con el log
+- Editor de configuración a parte
