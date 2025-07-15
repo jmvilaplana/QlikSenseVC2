@@ -4,6 +4,8 @@ from PySide6.QtWidgets import (
     QLabel, QMessageBox, QLineEdit, QHBoxLayout
 )
 from PySide6.QtGui import QIcon, QColor, QPalette
+from engine_exporter import export_app_objects, import_app_objects
+
 import configparser
 import requests
 import os
@@ -43,6 +45,7 @@ class MainWindow(QMainWindow):
 
         # Botón para cargar apps
         self.load_apps_button = QPushButton("Cargar aplicaciones")
+        self.load_apps_button.clicked.connect(self.load_apps)
         layout.addWidget(self.load_apps_button)
 
         # Filtro
@@ -54,21 +57,23 @@ class MainWindow(QMainWindow):
 
         # Tabla de apps
         self.app_table = QTableWidget()
-        self.app_table.setColumnCount(4)
-        self.app_table.setHorizontalHeaderLabels(["Nombre", "Stream / Área", "Publicado", "Último Refresco"])
+        self.app_table.setColumnCount(5)
+        self.app_table.setHorizontalHeaderLabels(["Nombre", "ID", "Stream / Área", "Publicado", "Último Refresco"])
         self.app_table.setSortingEnabled(True)
         layout.addWidget(QLabel("Aplicaciones disponibles"))
         layout.addWidget(self.app_table)
 
         # Export/import buttons
         self.export_button = QPushButton("Exportar App")
-        self.import_button = QPushButton("Importar App")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self.export_selected_app)
+
         layout.addWidget(self.export_button)
+
+        self.import_button = QPushButton("Importar App")
+        self.import_button.clicked.connect(self.import_selected_app)
         layout.addWidget(self.import_button)
 
-        # Test connection button
-        self.test_button = QPushButton("Probar conexión")
-        layout.addWidget(self.test_button)
 
         # Config editor
         layout.addWidget(QLabel("Editor de configuración"))
@@ -78,14 +83,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.config_editor)
 
         self.save_config_button = QPushButton("Guardar configuración")
+        self.save_config_button.clicked.connect(self.save_config)
         layout.addWidget(self.save_config_button)
 
         # Events
-        self.save_config_button.clicked.connect(self.save_config)
-        self.export_button.clicked.connect(self.dummy_export)
-        self.import_button.clicked.connect(self.dummy_import)
-        self.test_button.clicked.connect(self.test_connection)
-        self.load_apps_button.clicked.connect(self.load_apps)
+
+
+
+
 
         self.apps_data = []
 
@@ -99,8 +104,16 @@ class MainWindow(QMainWindow):
             "font-weight: bold; font-size: 16px; padding: 6px; background-color: #cccccc; color: white;")
         layout.addWidget(self.env_label)
 
+        self.app_table.itemSelectionChanged.connect(self.on_app_selected)
+
         self.settings_file = "settings.json"
         self.load_ui_settings()
+
+
+    def on_app_selected(self):
+        selected = self.app_table.selectedItems()
+        self.export_button.setEnabled(bool(selected))
+
 
     def get_connection_details(self):
         section = self.server_selector.currentText()
@@ -124,6 +137,7 @@ class MainWindow(QMainWindow):
             "icon": icon
         }
 
+
     def save_config(self):
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -135,30 +149,61 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {e}")
 
-    def dummy_export(self):
-        QMessageBox.information(self, "Exportar", "Función de exportación aún no implementada.")
+    def export_selected_app(self):
+        selected = self.app_table.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "Exportar", "Selecciona una aplicación primero.")
+            return
 
-    def dummy_import(self):
-        QMessageBox.information(self, "Importar", "Función de importación aún no implementada.")
+        row = selected[0].row()
+        app = self.apps_data[row]
+        app_id = app.get("id")
+        app_name = app.get("name").replace(" ", "_")
+        output_folder = os.path.join("exported", app_name)
+        os.makedirs(output_folder, exist_ok=True)
 
-    def test_connection(self):
+        try:
+            # Guardar metadata QRS
+            with open(os.path.join(output_folder, "metadata.json"), "w", encoding="utf-8") as f:
+                json.dump(app, f, indent=2)
+
+            # Conexión
+            conn = self.get_connection_details()
+            export_app_objects(app_id, output_folder, conn)
+
+            QMessageBox.information(self, "Exportación completada",
+                                    f"Aplicación '{app_name}' exportada correctamente en:\n{output_folder}")
+            logging.info(f"Exportación completa para {app_name} ({app_id})")
+        except Exception as e:
+            logging.exception("Error al exportar la app:")
+            QMessageBox.critical(self, "Error", f"No se pudo exportar la app:\n{e}")
+
+    def import_selected_app(self):
+        selected = self.app_table.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "Importar", "Selecciona una aplicación primero.")
+            return
+
+        row = selected[0].row()
+        app = self.apps_data[row]
+        app_id = app.get("id")
+        app_name = app.get("name").replace(" ", "_")
+        input_folder = os.path.join("exported", app_name)
+
+        if not os.path.isdir(input_folder):
+            QMessageBox.warning(self, "Error",
+                                f"No se encontró el directorio de exportación para '{app_name}' en:\n{input_folder}")
+            return
+
         try:
             conn = self.get_connection_details()
-            url = f"{conn['host']}/qrs/about"
-            response = requests.get(
-                url,
-                cert=(conn["cert_file"], conn["key_file"]),
-                verify=False,
-                headers={"X-Qlik-User": conn["header_user"]},
-                timeout=5
-            )
-            if response.status_code == 200:
-                about = response.json()
-                QMessageBox.information(self, "Éxito", f"Conexión correcta:\nVersion: {about.get('buildVersion')}")
-            else:
-                QMessageBox.warning(self, "Fallo", f"Conexión fallida: {response.status_code}")
+            import_app_objects(app_id, input_folder, conn)
+            QMessageBox.information(self, "Importación completada",
+                                    f"Aplicación '{app_name}' importada correctamente desde:\n{input_folder}")
+            logging.info(f"Importación completa para {app_name} ({app_id})")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error en la conexión:\n{e}")
+            logging.exception("Error al importar la app:")
+            QMessageBox.critical(self, "Error", f"No se pudo importar la app:\n{e}")
 
     def load_apps(self):
 
@@ -200,9 +245,11 @@ class MainWindow(QMainWindow):
                         refresco = app.get("lastReloadTime", "") or "-"
 
                         self.app_table.setItem(row, 0, QTableWidgetItem(nombre))
-                        self.app_table.setItem(row, 1, QTableWidgetItem(stream))
-                        self.app_table.setItem(row, 2, QTableWidgetItem(publicado))
-                        self.app_table.setItem(row, 3, QTableWidgetItem(refresco))
+                        self.app_table.setItem(row, 1, QTableWidgetItem(app.get("id", "")))
+                        self.app_table.setItem(row, 2, QTableWidgetItem(stream))
+                        self.app_table.setItem(row, 3, QTableWidgetItem(publicado))
+                        self.app_table.setItem(row, 4, QTableWidgetItem(refresco))
+
                     self.update_theme_for_server()
                 except Exception as e:
                     logging.exception("Error al parsear JSON:")
