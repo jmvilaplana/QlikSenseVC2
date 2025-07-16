@@ -145,6 +145,11 @@ def export_app_objects(app_id, output_folder, conn):
     logging.info("Exportación completa y conexión cerrada.")
 
 def import_app_objects(app_id, input_folder, conn):
+    import os, json, logging
+    import ssl
+    import websocket
+    from engine_exporter import send
+
     logging.info("Estableciendo conexión WebSocket con Engine API para importación")
 
     engine_host = conn.get("engine_host", conn["host"].replace("https://", "").split(":" )[0])
@@ -165,16 +170,12 @@ def import_app_objects(app_id, input_folder, conn):
     ws = websocket.create_connection(
         ws_url,
         sslopt=sslopt,
-        header=[
-            f"X-Qlik-User: {conn['header_user']}"
-        ]
+        header=[f"X-Qlik-User: {conn['header_user']}"]
     )
 
-    json.loads(ws.recv())  # Descartar mensaje inicial
-
+    json.loads(ws.recv())
     logging.info("Conexión establecida. Abriendo documento destino...")
     open_doc = send(ws, "OpenDoc", handle=-1, params=[app_id])
-
     if "result" not in open_doc:
         logging.error(f"No se pudo abrir la app destino: {open_doc}")
         ws.close()
@@ -183,17 +184,15 @@ def import_app_objects(app_id, input_folder, conn):
     doc_handle = open_doc["result"]["qReturn"]["qHandle"]
     logging.info(f"Documento destino abierto con handle {doc_handle}")
 
-    # Importar script
+    # Script
     script_path = os.path.join(input_folder, "script.qvs")
     if os.path.exists(script_path):
         with open(script_path, "r", encoding="utf-8") as f:
             script = f.read()
         send(ws, "SetScript", handle=doc_handle, params={"qScript": script})
         logging.info("Script importado correctamente.")
-    else:
-        logging.warning("No se encontró script.qvs para importar.")
 
-    # Importar variables
+    # Variables
     variables_path = os.path.join(input_folder, "variables.json")
     if os.path.exists(variables_path):
         with open(variables_path, "r", encoding="utf-8") as f:
@@ -203,40 +202,43 @@ def import_app_objects(app_id, input_folder, conn):
             value = var.get("qDefinition", "")
             send(ws, "CreateVariableEx", handle=doc_handle, params={"qName": name, "qDefinition": value})
         logging.info(f"{len(variables)} variables importadas correctamente.")
-    else:
-        logging.warning("No se encontró variables.json para importar.")
 
-    # Importar medidas
-    measures_path = os.path.join(input_folder, "measures.json")
-    if os.path.exists(measures_path):
-        with open(measures_path, "r", encoding="utf-8") as f:
+    # Medidas
+    path = os.path.join(input_folder, "measures.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             measures = json.load(f)
         for m in measures:
-            props = m["qProp"]
+            props = m.get("qProp", m)
             send(ws, "CreateMeasure", handle=doc_handle, params={"qProp": props})
         logging.info(f"{len(measures)} medidas importadas correctamente.")
 
-    # Importar dimensiones
-    dimensions_path = os.path.join(input_folder, "dimensions.json")
-    if os.path.exists(dimensions_path):
-        with open(dimensions_path, "r", encoding="utf-8") as f:
-            dimensions = json.load(f)
-        for d in dimensions:
-            props = d["qProp"]
+    # Dimensiones
+    path = os.path.join(input_folder, "dimensions.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            dims = json.load(f)
+        for d in dims:
+            props = d.get("qProp", d)
             send(ws, "CreateDimension", handle=doc_handle, params={"qProp": props})
+        logging.info(f"{len(dims)} dimensiones importadas correctamente.")
 
-        logging.info(f"{len(dimensions)} dimensiones importadas correctamente.")
-
-    # Importar hojas
-    sheets_path = os.path.join(input_folder, "sheets.json")
-    if os.path.exists(sheets_path):
-        with open(sheets_path, "r", encoding="utf-8") as f:
+    # Hojas
+    path = os.path.join(input_folder, "sheets.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             sheets = json.load(f)
         for s in sheets:
-            props = s["qProp"]
+            props = s.get("qProp", s)
             send(ws, "CreateObject", handle=doc_handle, params={"qProp": props})
-
         logging.info(f"{len(sheets)} hojas importadas correctamente.")
+
+    # Otros
+    path = os.path.join(input_folder, "other_objects.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            other = json.load(f)
+        logging.info(f"{len(other)} objetos ignorados importados como referencia.")
 
     ws.close()
     logging.info("Importación completada y conexión cerrada.")

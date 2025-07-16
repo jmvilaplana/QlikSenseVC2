@@ -1,10 +1,14 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QComboBox,
+    QMainWindow, QWidget, QVBoxLayout, QComboBox, QProgressDialog,
     QTableWidget, QTableWidgetItem, QPushButton, QTextEdit,
-    QLabel, QMessageBox, QLineEdit, QHBoxLayout
+    QLabel, QMessageBox, QLineEdit, QHBoxLayout, QDialog, QVBoxLayout
 )
-from PySide6.QtGui import QIcon, QColor, QPalette
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QColor, QPalette, QTextCursor
 from engine_exporter import export_app_objects, import_app_objects
+from concurrent.futures import ThreadPoolExecutor
+
+from import_dialog import ImportDialog
 
 import configparser
 import requests
@@ -12,6 +16,8 @@ import os
 import logging
 import urllib3
 import json
+import sys
+from io import StringIO
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -23,6 +29,41 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+class LogDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Progreso de Importación")
+        self.resize(600, 400)
+        layout = QVBoxLayout(self)
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        layout.addWidget(self.text_edit)
+        self.close_button = QPushButton("Cerrar")
+        self.close_button.setEnabled(False)
+        self.close_button.clicked.connect(self.accept)
+        layout.addWidget(self.close_button)
+        self.timer = QTimer(self)
+        self.timer.setInterval(200)
+        self.timer.timeout.connect(self.refresh_log)
+        self._stream = None
+
+    def start_stream(self, stream):
+        self._stream = stream
+        self.timer.start()
+
+    def refresh_log(self):
+        if self._stream:
+            self.text_edit.setPlainText(self._stream.getvalue())
+            from PySide6.QtGui import QTextCursor
+            self.text_edit.moveCursor(QTextCursor.End)
+
+    def stop(self, final_message=""):
+        self.timer.stop()
+        self._stream = None
+        if final_message:
+            self.text_edit.append("\n<b>" + final_message + "</b>")
+        self.close_button.setEnabled(True)
 
 
 class MainWindow(QMainWindow):
@@ -149,6 +190,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {e}")
 
+
     def export_selected_app(self):
         selected = self.app_table.selectedItems()
         if not selected:
@@ -178,6 +220,7 @@ class MainWindow(QMainWindow):
             logging.exception("Error al exportar la app:")
             QMessageBox.critical(self, "Error", f"No se pudo exportar la app:\n{e}")
 
+
     def import_selected_app(self):
         selected = self.app_table.selectedItems()
         if not selected:
@@ -187,7 +230,7 @@ class MainWindow(QMainWindow):
         row = selected[0].row()
         app = self.apps_data[row]
         app_id = app.get("id")
-        app_name = app.get("name").replace(" ", "_")
+        app_name = app.get("name", "unnamed_app").replace(" ", "_")
         input_folder = os.path.join("exported", app_name)
 
         if not os.path.isdir(input_folder):
@@ -195,15 +238,30 @@ class MainWindow(QMainWindow):
                                 f"No se encontró el directorio de exportación para '{app_name}' en:\n{input_folder}")
             return
 
-        try:
-            conn = self.get_connection_details()
-            import_app_objects(app_id, input_folder, conn)
-            QMessageBox.information(self, "Importación completada",
-                                    f"Aplicación '{app_name}' importada correctamente desde:\n{input_folder}")
-            logging.info(f"Importación completa para {app_name} ({app_id})")
-        except Exception as e:
-            logging.exception("Error al importar la app:")
-            QMessageBox.critical(self, "Error", f"No se pudo importar la app:\n{e}")
+        log_stream = StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(handler)
+
+        log_dialog = LogDialog(self)
+        log_dialog.start_stream(log_stream)
+        log_dialog.show()
+
+        def import_task():
+            try:
+                conn = self.get_connection_details()
+                import_app_objects(app_id, input_folder, conn)
+                logging.info("\n✔️ Importación finalizada con éxito")
+                log_dialog.stop("✔️ Importación completada")
+            except Exception as e:
+                logging.exception("❌ Error durante la importación")
+                log_dialog.stop("❌ Error durante la importación")
+            finally:
+                logging.getLogger().removeHandler(handler)
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(import_task)
+
 
     def load_apps(self):
 
@@ -292,6 +350,7 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, "Detalles de la App", details)
 
+
     def filter_table(self):
         filtro = self.filter_input.text().lower()
         for row in range(self.app_table.rowCount()):
@@ -300,9 +359,11 @@ class MainWindow(QMainWindow):
             mostrar = filtro in nombre or filtro in stream
             self.app_table.setRowHidden(row, not mostrar)
 
+
     def closeEvent(self, event):
         self.save_ui_settings()
         super().closeEvent(event)
+
 
     def save_ui_settings(self):
         settings = {
@@ -325,6 +386,7 @@ class MainWindow(QMainWindow):
             logging.info("Ajustes de interfaz guardados")
         except Exception as e:
             logging.error(f"No se pudo guardar settings.json: {e}")
+
 
     def load_ui_settings(self):
         try:
@@ -353,6 +415,7 @@ class MainWindow(QMainWindow):
             logging.info("Ajustes de interfaz cargados")
         except Exception as e:
             logging.warning(f"No se pudieron cargar ajustes de UI: {e}")
+
 
     def update_theme_for_server(self):
         conn = self.get_connection_details()
